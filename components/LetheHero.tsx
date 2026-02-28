@@ -1,7 +1,7 @@
 'use client';
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Zap, RotateCcw, Clock, DollarSign, Shield, ArrowRight } from "lucide-react";
+import { Zap, RotateCcw, Clock, DollarSign, Shield, ArrowRight, Copy, ExternalLink } from "lucide-react";
 import Link from "next/link";
 
 const privacyModes = [
@@ -35,6 +35,19 @@ export function LetheHero() {
   const [selectedMode, setSelectedMode] = useState("fast-track");
   const [amount, setAmount] = useState("1.0");
   const [destination, setDestination] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const contractAddress = "HEZ6KcNNUKaWvUCBEe4BtfoeDHEHPkCHY9JaDNqrpump";
+
+  const copyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(contractAddress);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy: ', err);
+    }
+  };
 
   const selectedPrivacy = privacyModes.find(m => m.id === selectedMode);
 
@@ -63,6 +76,21 @@ export function LetheHero() {
             <p className="text-sm sm:text-lg md:text-xl text-muted-foreground max-w-md">
               Protect your trading activity from copytraders. Fund destination wallets with no on-chain link to your source.
             </p>
+          </div>
+
+          <div className="bg-surface-card border border-border rounded-lg p-2 md:p-3 font-mono text-xs md:text-sm">
+            <div className="text-muted-foreground text-xs">
+              Contract: 
+              <button 
+                onClick={copyToClipboard}
+                className="text-primary hover:text-primary/80 transition-colors cursor-pointer inline-flex items-center gap-1 bg-transparent border-none px-1 py-0.5 font-mono text-xs rounded hover:bg-primary/10 ml-1"
+                title="Click to copy contract address"
+              >
+                <span className="select-none break-all">{contractAddress}</span>
+                <Copy className="h-3 w-3 flex-shrink-0" />
+              </button>
+              {copied && <span className="text-green-400 text-[10px] ml-1">Copied!</span>}
+            </div>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3">
@@ -94,7 +122,15 @@ export function LetheHero() {
             {/* Widget header */}
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-semibold text-white">Quick Fund</h3>
-              <span className="text-xs text-white/40 bg-zinc-800/60 px-2 py-0.5 rounded-full">Solana</span>
+              <a
+                href="https://dexscreener.com/solana/amme84klt1yzpz8akyjjtwd26hesaj5fblg6tew2rxcx"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-[11px] text-white/40 hover:text-primary bg-zinc-800/60 hover:bg-zinc-800 px-2 py-0.5 rounded-full transition-colors"
+              >
+                Chart
+                <ExternalLink className="h-2.5 w-2.5" />
+              </a>
             </div>
 
             {/* Privacy mode toggle */}
