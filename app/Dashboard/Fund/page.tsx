@@ -1219,23 +1219,6 @@ export default function FundPage() {
       setTransactionStep(0);
       setCrossChainStatus('');
 
-      try {
-        await fetch('/api/analytics/track', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            operation: selectedLevel === "balanced" ? 'fund_anonymous' : 'fund_fasttrack',
-            amount_sol: parseFloat(amount),
-            token_symbol: 'SOL',
-            user_wallet: publicKey?.toString() || ''
-          }),
-        });
-      } catch (trackingError) {
-        console.error('Analytics tracking failed:', trackingError);
-      }
-
       if (selectedLevel === "balanced") {
         await handleCrossChainTransfer();
       } else {
