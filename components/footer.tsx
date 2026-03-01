@@ -15,7 +15,7 @@ const Footer = () => {
                 <Logo size={32} className="text-white" />
               </div>
               <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-300 to-purple-300">
-                Lethe
+                FundSwap
               </span>
             </Link>
             <p className="mt-4 text-sm text-white/60 leading-relaxed">
@@ -51,7 +51,7 @@ const Footer = () => {
             <h3 className="text-sm font-semibold mb-4 text-white/80">Socials</h3>
             <ul className="space-y-3">
               <li>
-                <a href="https://x.com/LetheSol" target = "_blank" className="text-sm text-white/60 hover:text-white flex items-center transition-colors">
+                <a href="https://x.com/FundSwapSol" target = "_blank" className="text-sm text-white/60 hover:text-white flex items-center transition-colors">
                   <Twitter className="mr-2 h-4 w-4" /> Twitter
                 </a>
               </li>

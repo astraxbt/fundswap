@@ -1,11 +1,18 @@
 'use client';
 import React, { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Zap, RotateCcw, Clock, DollarSign, Shield, ArrowRight, Copy, ExternalLink, Wallet } from "lucide-react";
+import { Zap, RotateCcw, Clock, DollarSign, Shield, ArrowRight, Copy, ExternalLink, Wallet, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
-import { Connection, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { Connection, LAMPORTS_PER_SOL, PublicKey, ComputeBudgetProgram, TransactionMessage, VersionedTransaction, SystemProgram } from '@solana/web3.js';
+import {
+  createRpc,
+  LightSystemProgram,
+  selectMinCompressedSolAccountsForTransfer,
+  defaultTestStateTreeAccounts,
+  bn,
+} from '@lightprotocol/stateless.js';
 
 const privacyModes = [
   {
@@ -19,25 +26,15 @@ const privacyModes = [
     iconColor: "text-yellow-400",
     borderColor: "border-yellow-500/30",
     selectedBg: "bg-yellow-500/5"
-  },
-  {
-    id: "balanced",
-    name: "Anonymous",
-    description: "Cross-chain privacy routing",
-    icon: RotateCcw,
-    time: "~1 min",
-    fee: "Free",
-    privacy: "Enhanced",
-    iconColor: "text-blue-400",
-    borderColor: "border-blue-500/30",
-    selectedBg: "bg-blue-500/5"
   }
 ];
 
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || 'https://api.mainnet-beta.solana.com';
+const FEE_RECIPIENT = new PublicKey("47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh");
+const RELAY_WALLET_PUB = new PublicKey("BNpekdZdjeiJBYzSz2mS9PbTj6yUmZfGBXmxfGMu74tU");
 
 export function LetheHero() {
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, wallet, sendTransaction } = useWallet();
   const { setVisible: setWalletModalVisible } = useWalletModal();
   const [selectedMode, setSelectedMode] = useState("fast-track");
   const [amount, setAmount] = useState("1.0");
@@ -45,6 +42,10 @@ export function LetheHero() {
   const [copied, setCopied] = useState(false);
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [loadingBalance, setLoadingBalance] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [txStep, setTxStep] = useState(0);
 
   const contractAddress = "HEZ6KcNNUKaWvUCBEe4BtfoeDHEHPkCHY9JaDNqrpump";
 
@@ -81,7 +82,212 @@ export function LetheHero() {
     }
   }, [connected, publicKey, fetchBalance]);
 
+  const validateDestinationAddress = (address: string): boolean => {
+    if (!address || address.trim().length === 0) return false;
+    try {
+      new PublicKey(address);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Shield (compress) user SOL to relay wallet + 1% fee — one user signature
+  const executeShieldToRelay = useCallback(async (): Promise<number> => {
+    if (!connected || !publicKey || !sendTransaction) {
+      throw new Error('Please connect your wallet');
+    }
+    if (!validateDestinationAddress(destination)) {
+      throw new Error('Please enter a valid destination wallet address');
+    }
+    const transferAmount = parseFloat(amount);
+    if (isNaN(transferAmount) || transferAmount <= 0) {
+      throw new Error('Please enter a valid amount');
+    }
+
+    const connection = await createRpc(RPC_URL);
+    const lamportsAmount = transferAmount * 1e9;
+    const feeAmount = Math.floor(lamportsAmount * 0.01);
+    const shieldAmount = lamportsAmount - feeAmount;
+
+    setStatus('Checking balance...');
+    const userBalance = await connection.getBalance(publicKey);
+    const totalRequired = lamportsAmount + 5000;
+    if (userBalance < totalRequired) {
+      throw new Error(`Insufficient balance. Need ${(totalRequired / 1e9).toFixed(4)} SOL but only have ${(userBalance / 1e9).toFixed(4)} SOL`);
+    }
+
+    setStatus('Creating shield transaction...');
+    const shieldInstruction = await LightSystemProgram.compress({
+      payer: publicKey,
+      toAddress: RELAY_WALLET_PUB,
+      lamports: shieldAmount,
+      outputStateTree: defaultTestStateTreeAccounts().merkleTree,
+    });
+
+    const shieldInstructions = [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
+      SystemProgram.transfer({
+        fromPubkey: publicKey,
+        toPubkey: FEE_RECIPIENT,
+        lamports: feeAmount,
+      }),
+      shieldInstruction,
+    ];
+
+    const { context: { slot: minContextSlot }, value: blockhashCtx } =
+      await connection.getLatestBlockhashAndContext();
+
+    const messageV0 = new TransactionMessage({
+      payerKey: publicKey,
+      recentBlockhash: blockhashCtx.blockhash,
+      instructions: shieldInstructions,
+    }).compileToV0Message();
+
+    const transaction = new VersionedTransaction(messageV0);
+
+    setStatus('Please approve the transaction in your wallet...');
+    const signature = await sendTransaction(transaction, connection, {
+      minContextSlot,
+    });
+
+    setTxStep(1);
+    setStatus('Confirming shield transaction...');
+
+    for (let i = 0; i < 3; i++) {
+      try {
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+        const confirmation = await connection.confirmTransaction({
+          signature, blockhash, lastValidBlockHeight
+        }, 'confirmed');
+        if (confirmation.value.err) {
+          throw new Error(`Transaction failed: ${confirmation.value.err}`);
+        }
+        const tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+        if (!tx) throw new Error('Transaction not found');
+        console.log(`Shield transaction confirmed: ${signature}`);
+        break;
+      } catch (err) {
+        console.log(`Shield confirmation attempt ${i + 1} failed:`, err);
+        if (i === 2) throw err;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    setStatus('Funds shielded to relay wallet');
+    setTxStep(2);
+    return transferAmount - (transferAmount * 0.01);
+  }, [connected, publicKey, sendTransaction, amount, destination]);
+
+  // Wait for relay wallet compressed accounts
+  const waitForCompressedAccounts = async (connection: any, maxRetries = 5, delayMs = 2000) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        setStatus(`Checking relay wallet accounts (attempt ${attempt}/${maxRetries})...`);
+        if (attempt > 1) await new Promise(resolve => setTimeout(resolve, delayMs));
+        const compressedAccountsResponse = await connection.getCompressedAccountsByOwner(RELAY_WALLET_PUB);
+        const compressedAccounts = compressedAccountsResponse.items;
+        if (compressedAccounts && compressedAccounts.length > 0) return compressedAccounts;
+        if (attempt === maxRetries) throw new Error(`No compressed accounts found after ${maxRetries} attempts.`);
+      } catch (err) {
+        if (attempt === maxRetries) throw err;
+      }
+    }
+  };
+
+  // Relay wallet unshields to destination — server-side
+  const handleRelayWalletUnshield = useCallback(async (transferAmount: number) => {
+    try {
+      setStatus('Preparing relay wallet unshield...');
+      setTxStep(3);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const connection = await createRpc(RPC_URL);
+      const lamportsAmount = transferAmount * 1e9;
+      const compressedAccounts = await waitForCompressedAccounts(connection);
+      const [selectedAccounts, _] = selectMinCompressedSolAccountsForTransfer(compressedAccounts, lamportsAmount);
+      if (!selectedAccounts || selectedAccounts.length === 0) throw new Error('Insufficient compressed balance in relay wallet');
+
+      const { compressedProof, rootIndices } = await connection.getValidityProof(
+        selectedAccounts.map((account: any) => {
+          const hashBuffer = Buffer.from(account.hash);
+          return bn(hashBuffer);
+        })
+      );
+
+      const unshieldInstruction = await LightSystemProgram.decompress({
+        payer: RELAY_WALLET_PUB,
+        inputCompressedAccounts: selectedAccounts,
+        toAddress: new PublicKey(destination),
+        lamports: lamportsAmount,
+        outputStateTree: defaultTestStateTreeAccounts().merkleTree,
+        recentInputStateRootIndices: rootIndices,
+        recentValidityProof: compressedProof,
+      });
+
+      const serializedInstructions = [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
+        unshieldInstruction,
+      ].map((inst: any) => ({
+        programId: inst.programId.toString(),
+        keys: inst.keys.map((key: any) => ({ pubkey: key.pubkey.toString(), isSigner: key.isSigner, isWritable: key.isWritable })),
+        data: Array.from(inst.data)
+      }));
+
+      setStatus('Sending funds to destination...');
+      const maxAttempts = 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          const response = await fetch('/api/fund', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instructions: serializedInstructions })
+          });
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to process unshield transaction');
+          }
+          const { signature, blockhash, lastValidBlockHeight } = await response.json();
+          const confirmation = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+          if (confirmation.value.err) throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+          console.log(`Relay unshield confirmed: ${signature}`);
+          setStatus('Transfer complete!');
+          setTxStep(4);
+          return;
+        } catch (err: any) {
+          console.log(`Unshield attempt ${attempt + 1} failed:`, err);
+          if (attempt === maxAttempts - 1) throw err;
+          setStatus(`Retrying unshield (attempt ${attempt + 2}/${maxAttempts})...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    } catch (err) {
+      console.error('Relay unshield error:', err);
+      throw err;
+    }
+  }, [destination]);
+
+  // Main fund handler for fast-track mode
+  const handleFund = async () => {
+    try {
+      setIsLoading(true);
+      setError('');
+      setTxStep(0);
+      const netAmount = await executeShieldToRelay();
+      await handleRelayWalletUnshield(netAmount);
+      if (publicKey) fetchBalance();
+    } catch (err: any) {
+      console.error('Fund error:', err);
+      setError(err.message || 'Transfer failed');
+      setTxStep(0);
+    } finally {
+      setIsLoading(false);
+      setTimeout(() => { setStatus(''); }, 5000);
+    }
+  };
+
   const selectedPrivacy = privacyModes.find(m => m.id === selectedMode);
+  const canFund = connected && destination.trim() && parseFloat(amount) > 0 && !isLoading;
 
   return (
     <div className="relative min-h-screen flex items-center px-6 py-20">
@@ -139,22 +345,18 @@ export function LetheHero() {
           <div className="flex flex-col sm:flex-row gap-3">
             <Button 
               size="lg" 
-              className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-glow transition-all duration-300 hover:shadow-glow/70"
-              asChild
+              className="bg-primary/50 text-primary-foreground/70 cursor-not-allowed"
+              disabled
             >
-              <Link href="/Dashboard">
-                Launch App
-              </Link>
+              Launch App
             </Button>
             <Button 
               variant="outline" 
               size="lg"
-              className="bg-black border-primary/50 text-primary hover:bg-black/80 transition-all duration-300"
-              asChild
+              className="bg-black border-primary/30 text-primary/50 cursor-not-allowed"
+              disabled
             >
-              <Link href="/Dashboard/swap">
-                Private Swap
-              </Link>
+              Private Swap
             </Button>
           </div>
         </div>
@@ -234,8 +436,28 @@ export function LetheHero() {
               />
             </div>
 
+            {/* Progress / Status */}
+            {(status || error) && (
+              <div className="mb-3">
+                {txStep > 0 && !error && (
+                  <div className="w-full bg-zinc-700/50 rounded-full h-1 mb-2">
+                    <div
+                      className="bg-gradient-to-r from-purple-500 to-indigo-400 h-1 rounded-full transition-all duration-500"
+                      style={{ width: `${(txStep / 4) * 100}%` }}
+                    />
+                  </div>
+                )}
+                {status && !error && (
+                  <p className="text-[11px] text-purple-400 text-center">{status}</p>
+                )}
+                {error && (
+                  <p className="text-[11px] text-red-400 text-center">{error}</p>
+                )}
+              </div>
+            )}
+
             {/* Summary row */}
-            {selectedPrivacy && (
+            {selectedPrivacy && !status && !error && (
               <div className="flex items-center justify-between text-[11px] text-white/40 mb-4 px-1">
                 <span className="flex items-center gap-1">
                   <Shield className="h-3 w-3" />
@@ -245,7 +467,7 @@ export function LetheHero() {
               </div>
             )}
 
-            {/* CTA button — connects wallet or links to full Fund page */}
+            {/* CTA button */}
             {!connected ? (
               <Button
                 className="w-full bg-gradient-to-r from-purple-500 to-indigo-400 hover:from-purple-600 hover:to-indigo-500 text-white font-semibold shadow-[0_4px_14px_0_rgb(156,103,255,0.39)]"
@@ -259,12 +481,20 @@ export function LetheHero() {
               <Button
                 className="w-full bg-gradient-to-r from-purple-500 to-indigo-400 hover:from-purple-600 hover:to-indigo-500 text-white font-semibold shadow-[0_4px_14px_0_rgb(156,103,255,0.39)]"
                 size="lg"
-                asChild
+                onClick={handleFund}
+                disabled={!canFund}
               >
-                <Link href="/Dashboard/Fund">
-                  Fund Now
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    Fund Now
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </>
+                )}
               </Button>
             )}
 

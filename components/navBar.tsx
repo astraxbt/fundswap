@@ -43,7 +43,7 @@ const NavBar: React.FC = () => {
                 <div className="fixed top-0 w-full h-12 z-[1000] bg-background/80 backdrop-blur-sm px-4 flex justify-between items-center">
                     {/* Logo Section */}
                     <Link href="/" className="flex items-center hover:opacity-80 transition-opacity">
-                        <img src="/password.svg" alt="Lethe Logo" className="w-6 h-6" />
+                        <img src="/password.svg" alt="FundSwap Logo" className="w-6 h-6" />
                     </Link>
 
                     {/* Hamburger Menu */}
@@ -146,8 +146,8 @@ const NavBar: React.FC = () => {
             {/* Logo/Name Section */}
             <div className="flex items-center space-x-2">
                 <Link href="/" className="flex items-center space-x-2 hover:opacity-80 transition-opacity">
-                    <img src="/password.svg" alt="Lethe Logo" className="w-8 h-8" />
-                    <span className="text-white text-lg font-semibold">Lethe</span>
+                    <img src="/password.svg" alt="FundSwap Logo" className="w-8 h-8" />
+                    <span className="text-white text-lg font-semibold">FundSwap</span>
                 </Link>
             </div>
 

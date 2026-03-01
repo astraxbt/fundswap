@@ -205,7 +205,7 @@ const WalletConnectButton = () => {
               </Dropdown.Item>
             </Dropdown.Group>
             <div className="p-3 text-sm font-medium text-gray">
-              By connecting a wallet, you agree to the Lethe Terms of Service and Privacy Policy. 
+              By connecting a wallet, you agree to the FundSwap Terms of Service and Privacy Policy. 
               Additionally, you confirm that all funds being deposited and withdrawn are obtained legitimately. 
             </div>
           </Dropdown.Content>
