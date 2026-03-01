@@ -26,23 +26,13 @@ const Footer = () => {
             <h3 className="text-sm font-semibold mb-4 text-white/80">Features</h3>
             <ul className="space-y-3">
               <li>
-                <Link href="/Dashboard/vault" className="text-sm text-white/60 hover:text-white transition-colors">
-                  Privacy Vault
-                </Link>
-              </li>
-              <li>
-                <Link href="/Dashboard/send" className="text-sm text-white/60 hover:text-white transition-colors">
-                  Private Transfers
+                <Link href="/Dashboard/Fund" className="text-sm text-white/60 hover:text-white transition-colors">
+                  Anonymous Funding
                 </Link>
               </li>
               <li>
                 <Link href="/Dashboard/swap" className="text-sm text-white/60 hover:text-white transition-colors">
                   Private Swaps
-                </Link>
-              </li>
-              <li>
-                <Link href="/Dashboard/stealth" className="text-sm text-white/60 hover:text-white transition-colors">
-                  Stealth Mode
                 </Link>
               </li>
             </ul>
