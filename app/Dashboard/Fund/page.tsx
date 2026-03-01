@@ -29,7 +29,7 @@ interface PrivacyLevel {
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://api.mainnet-beta.solana.com";
 
 const FEE_RECIPIENT = new PublicKey("47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh");
-const RELAY_WALLET_PUB = new PublicKey("47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh");
+const RELAY_WALLET_PUB = new PublicKey("BNpekdZdjeiJBYzSz2mS9PbTj6yUmZfGBXmxfGMu74tU");
 const RELAY_BNB_WALLET = "0x1F842d9E53e20a2Bee70BE887581cfaBEF7f7b63";
 
 const privacyLevels: PrivacyLevel[] = [
@@ -360,7 +360,7 @@ export default function FundPage() {
           body: JSON.stringify({
             action: 'getSOLToBNBQuote',
             amount: (parseFloat(amountStr) * 1e9).toString(),
-            userAddress: '47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh',
+            userAddress: RELAY_WALLET_PUB.toString(),
             relayBNBAddress: RELAY_BNB_WALLET
           })
         });
