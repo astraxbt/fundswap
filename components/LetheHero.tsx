@@ -26,18 +26,6 @@ const privacyModes = [
     iconColor: "text-yellow-400",
     borderColor: "border-yellow-500/30",
     selectedBg: "bg-yellow-500/5"
-  },
-  {
-    id: "balanced",
-    name: "Anonymous",
-    description: "Cross-chain privacy routing",
-    icon: RotateCcw,
-    time: "~1 min",
-    fee: "Free",
-    privacy: "Enhanced",
-    iconColor: "text-blue-400",
-    borderColor: "border-blue-500/30",
-    selectedBg: "bg-blue-500/5"
   }
 ];
 
@@ -357,22 +345,18 @@ export function LetheHero() {
           <div className="flex flex-col sm:flex-row gap-3">
             <Button 
               size="lg" 
-              className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-glow transition-all duration-300 hover:shadow-glow/70"
-              asChild
+              className="bg-primary/50 text-primary-foreground/70 cursor-not-allowed"
+              disabled
             >
-              <Link href="/Dashboard">
-                Launch App
-              </Link>
+              Launch App
             </Button>
             <Button 
               variant="outline" 
               size="lg"
-              className="bg-black border-primary/50 text-primary hover:bg-black/80 transition-all duration-300"
-              asChild
+              className="bg-black border-primary/30 text-primary/50 cursor-not-allowed"
+              disabled
             >
-              <Link href="/Dashboard/swap">
-                Private Swap
-              </Link>
+              Private Swap
             </Button>
           </div>
         </div>
@@ -492,17 +476,6 @@ export function LetheHero() {
               >
                 <Wallet className="mr-2 h-4 w-4" />
                 Connect Wallet
-              </Button>
-            ) : selectedMode === "balanced" ? (
-              <Button
-                className="w-full bg-gradient-to-r from-purple-500 to-indigo-400 hover:from-purple-600 hover:to-indigo-500 text-white font-semibold shadow-[0_4px_14px_0_rgb(156,103,255,0.39)]"
-                size="lg"
-                asChild
-              >
-                <Link href="/Dashboard/Fund">
-                  Fund Anonymously
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
               </Button>
             ) : (
               <Button

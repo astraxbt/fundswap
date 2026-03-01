@@ -14,7 +14,7 @@ interface MenuItem {
 
 // Menu items array
 const menuItems: MenuItem[] = [
-  { name: "X", link: "https://twitter.com/LetheSol", isExternal: true },
+  { name: "X", link: "https://twitter.com/FundSwapSol", isExternal: true },
   { name: "CA", isCopyable: true, copyText: "HEZ6KcNNUKaWvUCBEe4BtfoeDHEHPkCHY9JaDNqrpump", link: "" }, // Added copyable contract
   { name: "Dex", link: "https://dexscreener.com/solana/amme84klt1yzpz8akyjjtwd26hesaj5fblg6tew2rxcx", isExternal: true},
 

@@ -7,7 +7,7 @@ const socialIcons = [
   {
     title: "Twitter",
     icon: Twitter,
-    link: "https://x.com/LetheSol"
+    link: "https://x.com/FundSwapSol"
   }
 ];
 
