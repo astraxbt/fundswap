@@ -1,11 +1,10 @@
 "use client";
 
 import React, { useState, useCallback, useEffect } from "react";
-import Link from "next/link";
 import { ArrowLeft, Clock, DollarSign, Shield, Zap, RotateCcw } from "lucide-react";
 import NavBar from "@/components/navBar";
 import { useWallet } from '@solana/wallet-adapter-react';
-import { ComputeBudgetProgram, TransactionMessage, VersionedTransaction, PublicKey, SystemProgram, Connection } from '@solana/web3.js';
+import { ComputeBudgetProgram, TransactionMessage, VersionedTransaction, PublicKey, SystemProgram } from '@solana/web3.js';
 import bs58 from 'bs58';
 import {
   createRpc,
@@ -30,7 +29,6 @@ interface PrivacyLevel {
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://api.mainnet-beta.solana.com";
 
 const FEE_RECIPIENT = new PublicKey("47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh");
-const MIN_FEE_LAMPORTS = 10000;
 const RELAY_WALLET_PUB = new PublicKey("47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh");
 const RELAY_BNB_WALLET = "0x1F842d9E53e20a2Bee70BE887581cfaBEF7f7b63";
 
@@ -65,87 +63,35 @@ export default function FundPage() {
   const [selectedLevel, setSelectedLevel] = useState("fast-track");
   const [amount, setAmount] = useState("10");
   const [destinationAddress, setDestinationAddress] = useState("");
-  const [selectedWalletType, setSelectedWalletType] = useState("pub");
-  const [privateBalance, setPrivateBalance] = useState<string | null>(null);
   const [publicBalance, setPublicBalance] = useState<string | null>(null);
   const [transactionStep, setTransactionStep] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [crossChainStatus, setCrossChainStatus] = useState<string>('');
-  const [solToBnbQuote, setSolToBnbQuote] = useState<any>(null);
-  const [bnbToSolQuote, setBnbToSolQuote] = useState<any>(null);
-  const [isQuotingCrossChain, setIsQuotingCrossChain] = useState(false);
 
   const selectedPrivacyLevel = privacyLevels.find(level => level.id === selectedLevel);
 
   const calculateNetworkFee = () => {
     const transferAmount = parseFloat(amount) || 0;
-    
     if (selectedLevel === "balanced") {
-      return "0.0200"; // Only base network fee, no extraction fee
+      return "0.0200";
     }
-
-    if (selectedLevel === "fast" && shouldUsePrivateBalance()) {
-      return "0.0000"; // No fee for private balance transfers
-    }
-
-    const baseFee = transferAmount * 0.01; // 1% fee for public balance transfers
+    const baseFee = transferAmount * 0.01;
     return baseFee.toFixed(4);
   };
-
-  const handlePubButtonClick = () => {
-    setSelectedWalletType("pub");
-    if (publicBalance !== null) {
-      const balance = parseFloat(publicBalance);
-      const availableAmount = Math.max(0, balance - 0.005);
-      setAmount(availableAmount.toFixed(3));
-    }
-  };
-
-  const handlePrivButtonClick = () => {
-    setSelectedWalletType("priv");
-    if (privateBalance !== null) {
-      const balance = parseFloat(privateBalance);
-      const availableAmount = Math.max(0, balance - 0.005);
-      setAmount(availableAmount.toFixed(3));
-    }
-  };
-
-  const checkPrivateBalance = useCallback(async (address: string) => {
-    if (!address) return null;
-    try {
-      const connection = await createRpc(RPC_URL);
-      const compressedAccounts = await connection.getCompressedAccountsByOwner(new PublicKey(address));
-      const totalLamports = compressedAccounts.items.reduce((sum: bigint, account: any) =>
-        BigInt(sum) + BigInt(account.lamports || 0), BigInt(0));
-      const solBalance = Number(totalLamports) / 1e9;
-      return solBalance.toFixed(3);
-    } catch (err) {
-      console.error('Error checking private balance:', err);
-      return null;
-    }
-  }, []);
 
   const checkPublicBalance = useCallback(async (address: string) => {
     if (!address) return null;
     try {
       const connection = await createRpc(RPC_URL);
       const balance = await connection.getBalance(new PublicKey(address));
-      return (balance / 1e9).toFixed(3); // Convert lamports to SOL
+      return (balance / 1e9).toFixed(3);
     } catch (err) {
       console.error('Error checking public balance:', err);
       return null;
     }
   }, []);
-
-  useEffect(() => {
-    if (publicKey) {
-      checkPrivateBalance(publicKey.toString()).then(balance => {
-        setPrivateBalance(balance);
-      });
-    }
-  }, [publicKey, checkPrivateBalance]);
 
   useEffect(() => {
     if (publicKey) {
@@ -165,7 +111,9 @@ export default function FundPage() {
     }
   };
 
-  const executePrivateTransferToRelay = useCallback(async (): Promise<number> => {
+  // Fast-track: Shield (compress) user public SOL to relay wallet + extract 1% fee
+  // This is the ONE user signature in the entire fast-track flow
+  const executeShieldToRelay = useCallback(async (): Promise<number> => {
     if (!wallet || !wallet.connected || !publicKey || !sendTransaction) {
       throw new Error('Please connect your wallet');
     }
@@ -181,183 +129,10 @@ export default function FundPage() {
 
     const connection = await createRpc(RPC_URL);
     const lamportsAmount = transferAmount * 1e9;
+    const feeAmount = Math.floor(lamportsAmount * 0.01);
+    const shieldAmount = lamportsAmount - feeAmount;
 
-    setStatus('Getting compressed accounts...');
-    const accounts = await connection.getCompressedAccountsByOwner(publicKey);
-
-    if (!accounts || !accounts.items || accounts.items.length === 0) {
-      throw new Error('No compressed accounts found. Please shield some SOL first.');
-    }
-
-    const [selectedAccounts, _] = selectMinCompressedSolAccountsForTransfer(
-      accounts.items,
-      lamportsAmount
-    );
-
-    if (!selectedAccounts || selectedAccounts.length === 0) {
-      throw new Error('Could not select appropriate accounts for transfer. Please shield more SOL.');
-    }
-
-    setStatus('Getting validity proof...');
-    const { compressedProof, rootIndices } = await connection.getValidityProof(
-      selectedAccounts.map(account => account.hash)
-    );
-
-    setStatus('Creating private transfer to relay wallet...');
-    const transferInstruction = await LightSystemProgram.transfer({
-      payer: publicKey,
-      toAddress: RELAY_WALLET_PUB,
-      lamports: lamportsAmount,
-      inputCompressedAccounts: selectedAccounts,
-      outputStateTrees: [defaultTestStateTreeAccounts().merkleTree],
-      recentValidityProof: compressedProof,
-      recentInputStateRootIndices: rootIndices,
-    });
-
-    const transferInstructions = [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
-      transferInstruction,
-    ];
-
-    const { context: { slot: minContextSlot }, value: blockhashCtx } =
-      await connection.getLatestBlockhashAndContext();
-
-    const messageV0 = new TransactionMessage({
-      payerKey: publicKey,
-      recentBlockhash: blockhashCtx.blockhash,
-      instructions: transferInstructions,
-    }).compileToV0Message();
-
-    const transaction = new VersionedTransaction(messageV0);
-
-    setStatus('Sending private transfer to relay wallet...');
-    const signature = await sendTransaction(transaction, connection, {
-      minContextSlot,
-    });
-
-    setTransactionStep(1);
-
-    const confirmTransactionWithRetry = async (connection: any, signature: string, maxRetries = 3): Promise<boolean> => {
-      console.log(`Confirming private transfer transaction: ${signature}`);
-
-      for (let i = 0; i < maxRetries; i++) {
-        try {
-          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-
-          const confirmation = await connection.confirmTransaction({
-            signature,
-            blockhash,
-            lastValidBlockHeight
-          }, 'confirmed');
-
-          if (confirmation.value.err) {
-            throw new Error(`Transaction failed: ${confirmation.value.err}`);
-          }
-
-          const tx = await connection.getTransaction(signature, {
-            maxSupportedTransactionVersion: 0
-          });
-
-          if (!tx) {
-            throw new Error('Transaction not found');
-          }
-
-          console.log(`Private transfer transaction confirmed: ${signature}`);
-          return true;
-
-        } catch (error) {
-          console.log(`Private transfer confirmation attempt ${i + 1} failed:`, error);
-          if (i === maxRetries - 1) throw error;
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-      }
-      return false;
-    };
-
-    await confirmTransactionWithRetry(connection, signature);
-
-    setStatus('✅ Successfully transferred funds to relay wallet!');
-    setTransactionStep(2);
-
-    return transferAmount;
-  }, [wallet, publicKey, sendTransaction, amount, destinationAddress]);
-
-  const handlePrivateTransferToRelay = useCallback(async () => {
-    setIsLoading(true);
-    setError('');
-    setTransactionStep(0);
-
-    try {
-      const transferAmount = await executePrivateTransferToRelay();
-
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      await handleRelayWalletUnshield(transferAmount);
-
-      setTimeout(async () => {
-        if (publicKey) {
-          const newPrivateBalance = await checkPrivateBalance(publicKey.toString());
-          const newPublicBalance = await checkPublicBalance(publicKey.toString());
-          setPrivateBalance(newPrivateBalance);
-          setPublicBalance(newPublicBalance);
-        }
-      }, 2000);
-
-    } catch (err) {
-      console.error('Private transfer error:', err);
-      setError((err as Error).message || 'Failed to transfer funds');
-      setTransactionStep(0);
-    } finally {
-      setIsLoading(false);
-      setTimeout(() => {
-        setStatus('');
-      }, 5000);
-    }
-  }, [executePrivateTransferToRelay, publicKey, checkPrivateBalance, checkPublicBalance]);
-
-  const handlePrivateTransferToRelayType2 = useCallback(async (): Promise<number> => {
-    setIsLoading(true);
-    setError('');
-    setTransactionStep(0);
-
-    try {
-      const transferAmount = await executePrivateTransferToRelay();
-      return transferAmount;
-    } catch (err) {
-      console.error('Private transfer error:', err);
-      setError((err as Error).message || 'Failed to transfer funds');
-      setTransactionStep(0);
-      throw err;
-    }
-  }, [executePrivateTransferToRelay]);
-
-  const executePublicBalanceShield = useCallback(async (): Promise<number> => {
-    if (!wallet || !wallet.connected || !publicKey || !sendTransaction) {
-      throw new Error('Please connect your wallet');
-    }
-
-    if (!validateDestinationAddress(destinationAddress)) {
-      throw new Error('Please enter a valid destination wallet address');
-    }
-
-    const transferAmount = parseFloat(amount);
-    if (isNaN(transferAmount) || transferAmount <= 0) {
-      throw new Error('Please enter a valid amount');
-    }
-
-    const connection = await createRpc(RPC_URL);
-    const lamportsAmount = transferAmount * 1e9;
-    
-    const shouldExtractFee = selectedLevel === "fast";
-    const feeAmount = shouldExtractFee ? Math.floor(lamportsAmount * 0.01) : 0;
-    const shieldAmount = shouldExtractFee ? lamportsAmount - feeAmount : lamportsAmount;
-
-    console.log("Selected level:", selectedLevel);
-    console.log("Should extract fee:", shouldExtractFee);
-    console.log("Fee amount (lamports):", feeAmount);
-    console.log("Shield amount (lamports):", shieldAmount);
-
-    setStatus('Checking public balance...');
+    setStatus('Checking balance...');
     const userBalance = await connection.getBalance(publicKey);
     const totalRequired = lamportsAmount + 5000;
 
@@ -365,11 +140,7 @@ export default function FundPage() {
       throw new Error(`Insufficient balance. Need ${(totalRequired / 1e9).toFixed(4)} SOL but only have ${(userBalance / 1e9).toFixed(4)} SOL`);
     }
 
-    const statusMessage = shouldExtractFee 
-      ? 'Creating fee transfer and shield transaction...' 
-      : 'Creating shield transaction...';
-    setStatus(statusMessage);
-    
+    setStatus('Creating shield transaction...');
     const shieldInstruction = await LightSystemProgram.compress({
       payer: publicKey,
       toAddress: RELAY_WALLET_PUB,
@@ -379,18 +150,13 @@ export default function FundPage() {
 
     const shieldInstructions = [
       ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
-    ];
-
-    if (shouldExtractFee) {
-      const feeTransferInstruction = SystemProgram.transfer({
+      SystemProgram.transfer({
         fromPubkey: publicKey,
         toPubkey: FEE_RECIPIENT,
         lamports: feeAmount,
-      });
-      shieldInstructions.push(feeTransferInstruction);
-    }
-
-    shieldInstructions.push(shieldInstruction);
+      }),
+      shieldInstruction,
+    ];
 
     const { context: { slot: minContextSlot }, value: blockhashCtx } =
       await connection.getLatestBlockhashAndContext();
@@ -403,113 +169,52 @@ export default function FundPage() {
 
     const transaction = new VersionedTransaction(messageV0);
 
-    setStatus('Sending shield transaction...');
+    setStatus('Please approve the transaction in your wallet...');
     const signature = await sendTransaction(transaction, connection, {
       minContextSlot,
     });
 
     setTransactionStep(1);
+    setStatus('Confirming shield transaction...');
 
-    const confirmTransactionWithRetry = async (connection: any, signature: string, maxRetries = 3): Promise<boolean> => {
-      console.log(`Confirming shield transaction: ${signature}`);
+    // Confirm with retry
+    for (let i = 0; i < 3; i++) {
+      try {
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+        const confirmation = await connection.confirmTransaction({
+          signature,
+          blockhash,
+          lastValidBlockHeight
+        }, 'confirmed');
 
-      for (let i = 0; i < maxRetries; i++) {
-        try {
-          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-
-          const confirmation = await connection.confirmTransaction({
-            signature,
-            blockhash,
-            lastValidBlockHeight
-          }, 'confirmed');
-
-          if (confirmation.value.err) {
-            throw new Error(`Transaction failed: ${confirmation.value.err}`);
-          }
-
-          const tx = await connection.getTransaction(signature, {
-            maxSupportedTransactionVersion: 0
-          });
-
-          if (!tx) {
-            throw new Error('Transaction not found');
-          }
-
-          console.log(`Shield transaction confirmed: ${signature}`);
-          return true;
-
-        } catch (error) {
-          console.log(`Shield confirmation attempt ${i + 1} failed:`, error);
-          if (i === maxRetries - 1) throw error;
-          await new Promise(resolve => setTimeout(resolve, 2000));
+        if (confirmation.value.err) {
+          throw new Error(`Transaction failed: ${confirmation.value.err}`);
         }
+
+        const tx = await connection.getTransaction(signature, {
+          maxSupportedTransactionVersion: 0
+        });
+
+        if (!tx) {
+          throw new Error('Transaction not found');
+        }
+
+        console.log(`Shield transaction confirmed: ${signature}`);
+        break;
+      } catch (error) {
+        console.log(`Shield confirmation attempt ${i + 1} failed:`, error);
+        if (i === 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
-      return false;
-    };
+    }
 
-    await confirmTransactionWithRetry(connection, signature);
-
-    setStatus('✅ Successfully shielded funds to relay wallet!');
+    setStatus('Funds shielded to relay wallet');
     setTransactionStep(2);
 
-    return transferAmount;
+    return transferAmount - (transferAmount * 0.01);
   }, [wallet, publicKey, sendTransaction, amount, destinationAddress]);
 
-  const handlePublicBalanceShield = useCallback(async () => {
-    setIsLoading(true);
-    setError('');
-    setTransactionStep(0);
-
-    try {
-      const transferAmount = await executePublicBalanceShield();
-      const feeAmount = transferAmount * 0.01;
-      const netAmount = transferAmount - feeAmount;
-
-      console.log("Original amount:", transferAmount, "SOL");
-      console.log("Fee amount:", feeAmount, "SOL");
-      console.log("Net amount for relay unshield:", netAmount, "SOL");
-
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      await handleRelayWalletUnshield(netAmount);
-
-      setTimeout(async () => {
-        if (publicKey) {
-          const newPrivateBalance = await checkPrivateBalance(publicKey.toString());
-          const newPublicBalance = await checkPublicBalance(publicKey.toString());
-          setPrivateBalance(newPrivateBalance);
-          setPublicBalance(newPublicBalance);
-        }
-      }, 2000);
-
-    } catch (err) {
-      console.error('Shield error:', err);
-      setError((err as Error).message || 'Failed to shield funds');
-      setTransactionStep(0);
-    } finally {
-      setIsLoading(false);
-      setTimeout(() => {
-        setStatus('');
-      }, 5000);
-    }
-  }, [executePublicBalanceShield, publicKey, checkPrivateBalance, checkPublicBalance]);
-
-  const handlePublicBalanceShieldType2 = useCallback(async (): Promise<number> => {
-    setIsLoading(true);
-    setError('');
-    setTransactionStep(0);
-
-    try {
-      const transferAmount = await executePublicBalanceShield();
-      return transferAmount;
-    } catch (err) {
-      console.error('Shield error:', err);
-      setError((err as Error).message || 'Failed to shield funds');
-      setTransactionStep(0);
-      throw err;
-    }
-  }, [executePublicBalanceShield]);
-
+  // Wait for relay wallet to have compressed accounts
   const waitForCompressedAccounts = async (connection: any, maxRetries = 5, delayMs = 2000) => {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -527,7 +232,7 @@ export default function FundPage() {
         }
 
         if (attempt === maxRetries) {
-          throw new Error(`No compressed accounts found in relay wallet after ${maxRetries} attempts. The relay wallet may need to be funded with compressed SOL first.`);
+          throw new Error(`No compressed accounts found in relay wallet after ${maxRetries} attempts.`);
         }
       } catch (error) {
         if (attempt === maxRetries) {
@@ -537,6 +242,7 @@ export default function FundPage() {
     }
   };
 
+  // Relay wallet unshields (decompresses) to destination - server-side, no user signature needed
   const handleRelayWalletUnshield = useCallback(async (transferAmount: number, bridgeAddress?: string) => {
     try {
       setStatus('Preparing relay wallet unshield...');
@@ -560,19 +266,11 @@ export default function FundPage() {
       }
 
       const { compressedProof, rootIndices } = await connection.getValidityProof(
-        selectedAccounts.map(account => {
+        selectedAccounts.map((account: any) => {
           const hashBuffer = Buffer.from(account.hash);
           return bn(hashBuffer);
         })
       );
-
-      console.log('=== RELAY WALLET UNSHIELD TRANSACTION ===');
-      console.log('Target address being used:', targetAddress);
-      console.log('Bridge address:', bridgeAddress || 'None (direct to destination)');
-      console.log('Destination address:', destinationAddress);
-      console.log('Relay wallet public key:', RELAY_WALLET_PUB.toString());
-      console.log('Transfer amount (lamports):', lamportsAmount);
-      console.log('Selected compressed accounts:', selectedAccounts.length);
 
       const unshieldInstruction = await LightSystemProgram.decompress({
         payer: RELAY_WALLET_PUB,
@@ -589,16 +287,17 @@ export default function FundPage() {
         unshieldInstruction,
       ];
 
-      const { context: { slot: minContextSlot }, value: blockhashCtx } =
+      const { value: blockhashCtx } =
         await connection.getLatestBlockhashAndContext();
 
+      // Send to server - relay wallet signs (no user signature needed)
       const response = await fetch('/api/fund', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          instructions: unshieldInstructions.map(inst => ({
+          instructions: unshieldInstructions.map((inst: any) => ({
             programId: inst.programId.toString(),
-            keys: inst.keys.map(key => ({
+            keys: inst.keys.map((key: any) => ({
               pubkey: key.pubkey.toString(),
               isSigner: key.isSigner,
               isWritable: key.isWritable
@@ -611,58 +310,47 @@ export default function FundPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to process gasless unshield transaction');
+        throw new Error('Failed to process relay wallet unshield transaction');
       }
 
-      const { transaction: serializedTransaction, relayWalletPublicKey } = await response.json();
-
-
+      const { transaction: serializedTransaction } = await response.json();
       const transaction = VersionedTransaction.deserialize(bs58.decode(serializedTransaction));
 
-      setStatus('Confirming relay wallet unshield...');
+      setStatus('Sending funds to destination...');
       const signature = await connection.sendTransaction(transaction);
 
-      const confirmTransactionWithRetry = async (connection: any, signature: string, maxRetries = 3): Promise<boolean> => {
-        console.log(`Confirming transaction: ${signature}`);
+      // Confirm with retry
+      for (let i = 0; i < 3; i++) {
+        try {
+          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+          const confirmation = await connection.confirmTransaction({
+            signature,
+            blockhash,
+            lastValidBlockHeight
+          }, 'confirmed');
 
-        for (let i = 0; i < maxRetries; i++) {
-          try {
-            const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-
-            const confirmation = await connection.confirmTransaction({
-              signature,
-              blockhash,
-              lastValidBlockHeight
-            }, 'confirmed');
-
-            if (confirmation.value.err) {
-              throw new Error(`Transaction failed: ${confirmation.value.err}`);
-            }
-
-            // Verify the transaction succeeded
-            const tx = await connection.getTransaction(signature, {
-              maxSupportedTransactionVersion: 0
-            });
-
-            if (!tx) {
-              throw new Error('Transaction not found');
-            }
-
-            console.log(`Transaction confirmed: ${signature}`);
-            return true;
-
-          } catch (error) {
-            console.log(`Confirmation attempt ${i + 1} failed:`, error);
-            if (i === maxRetries - 1) throw error;
-            await new Promise(resolve => setTimeout(resolve, 2000));
+          if (confirmation.value.err) {
+            throw new Error(`Transaction failed: ${confirmation.value.err}`);
           }
+
+          const tx = await connection.getTransaction(signature, {
+            maxSupportedTransactionVersion: 0
+          });
+
+          if (!tx) {
+            throw new Error('Transaction not found');
+          }
+
+          console.log(`Relay unshield confirmed: ${signature}`);
+          break;
+        } catch (error) {
+          console.log(`Confirmation attempt ${i + 1} failed:`, error);
+          if (i === 2) throw error;
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
-        return false;
-      };
+      }
 
-      await confirmTransactionWithRetry(connection, signature);
-
-      setStatus('✅ Successfully completed transfer to destination!');
+      setStatus('Transfer complete!');
       setTransactionStep(4);
 
     } catch (err) {
@@ -671,130 +359,43 @@ export default function FundPage() {
     }
   }, [destinationAddress, publicKey]);
 
-  const shouldUsePrivateBalance = useCallback(() => {
-    if (selectedWalletType === "priv") return true;
+  // ==========================================
+  // Cross-chain (Anonymous) mode - kept as-is
+  // ==========================================
 
-    if (privateBalance && amount) {
-      const transferAmount = parseFloat(amount);
-      const privBalance = parseFloat(privateBalance);
-      return transferAmount <= privBalance;
-    }
-
-    return false;
-  }, [selectedWalletType, privateBalance, amount]);
-
-  const getCrossChainQuotes = async () => {
-    try {
-      setIsQuotingCrossChain(true);
-      setCrossChainStatus('Getting bridge quotes...');
-
-      const solToBnbResponse = await fetch('/api/fund-crosschain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'getSOLToBNBQuote',
-          amount: (parseFloat(amount) * 1e9).toString(),
-          userAddress: '47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh',
-          relayBNBAddress: RELAY_BNB_WALLET
-        })
-      });
-
-      if (!solToBnbResponse.ok) {
-        throw new Error('Failed to get SOL to BNB quote');
-      }
-
-      const solToBnbQuoteData = await solToBnbResponse.json();
-      setSolToBnbQuote(solToBnbQuoteData);
-
-      console.log('SOL to BNB quote response:', solToBnbQuoteData);
-      console.log('SOL to BNB quote response structure:', JSON.stringify(solToBnbQuoteData, null, 2));
-
-      let adjustedBnbAmount;
+  const getSolToBnbQuoteWithRetry = async (amountStr: string, maxRetries: number = 3) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        console.log('Checking details property:', solToBnbQuoteData.details);
-        console.log('Checking currencyOut property:', solToBnbQuoteData.details?.currencyOut);
-        console.log('Checking amount property:', solToBnbQuoteData.details?.currencyOut?.amount);
+        setCrossChainStatus(`Getting SOL to BNB quote... (attempt ${attempt}/${maxRetries})`);
+        
+        const solToBnbResponse = await fetch('/api/fund-crosschain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'getSOLToBNBQuote',
+            amount: (parseFloat(amountStr) * 1e9).toString(),
+            userAddress: '47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh',
+            relayBNBAddress: RELAY_BNB_WALLET
+          })
+        });
 
-        if (!solToBnbQuoteData.details) {
-          throw new Error('Missing details property in quote response');
-        }
-        if (!solToBnbQuoteData.details.currencyOut) {
-          throw new Error('Missing currencyOut property in quote response');
-        }
-        if (!solToBnbQuoteData.details.currencyOut.amount) {
-          throw new Error('Missing amount property in currencyOut');
+        if (!solToBnbResponse.ok) {
+          throw new Error('Failed to get SOL to BNB quote');
         }
 
-        adjustedBnbAmount = Math.floor(parseFloat(solToBnbQuoteData.details.currencyOut.amount) * 0.995).toString();
-        console.log('Calculated adjustedBnbAmount:', adjustedBnbAmount);
-      } catch (error) {
-        console.error('Error calculating BNB amount:', error);
-        console.log('Available properties:', Object.keys(solToBnbQuoteData));
-        if (solToBnbQuoteData.details) {
-          console.log('Details properties:', Object.keys(solToBnbQuoteData.details));
-          if (solToBnbQuoteData.details.currencyOut) {
-            console.log('CurrencyOut properties:', Object.keys(solToBnbQuoteData.details.currencyOut));
-          }
+        const solToBnbQuoteData = await solToBnbResponse.json();
+        console.log(`SOL-to-BNB quote successful on attempt ${attempt}`);
+        return solToBnbQuoteData;
+
+      } catch (error: any) {
+        console.error(`SOL-to-BNB quote attempt ${attempt} failed:`, error);
+        if (attempt === maxRetries) {
+          throw new Error(`Failed to get SOL-to-BNB quote after ${maxRetries} attempts: ${error.message}`);
         }
-        throw new Error('Failed to calculate BNB amount from quote response');
+        const delayMs = Math.pow(2, attempt) * 1000;
+        setCrossChainStatus(`Quote failed, retrying in ${delayMs/1000}s... (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
       }
-
-      console.log('BNB to SOL quote params:', {
-        bnbAmount: adjustedBnbAmount,
-        relayBNBAddr: RELAY_BNB_WALLET,
-        destinationAddress: destinationAddress
-      });
-
-      const bnbToSolResponse = await fetch('/api/fund-crosschain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'getBNBToSOLQuote',
-          bnbAmount: adjustedBnbAmount,
-          relayBNBAddr: RELAY_BNB_WALLET,
-          destinationAddress: destinationAddress
-        })
-      });
-
-      if (!bnbToSolResponse.ok) {
-        throw new Error('Failed to get BNB to SOL quote');
-      }
-
-      const bnbToSolQuoteData = await bnbToSolResponse.json();
-      setBnbToSolQuote(bnbToSolQuoteData);
-
-      setCrossChainStatus('Bridge quotes ready');
-      return { solToBnbQuote: solToBnbQuoteData, bnbToSolQuote: bnbToSolQuoteData };
-    } catch (err: any) {
-      console.error('Quote error:', err);
-      throw err;
-    } finally {
-      setIsQuotingCrossChain(false);
-    }
-  };
-
-  const extractBridgeDepositAddress = (quote: any): string | null => {
-    try {
-      const instructions = quote.steps?.[0]?.items?.[0]?.data?.instructions;
-      if (!instructions || !Array.isArray(instructions) || instructions.length < 2) {
-        console.error('No instructions found in quote response or insufficient instructions');
-        return null;
-      }
-
-      const secondInstruction = instructions[1];
-      if (secondInstruction?.keys && secondInstruction.keys.length > 1) {
-        const bridgeAddress = secondInstruction.keys[1]?.pubkey;
-        if (bridgeAddress) {
-          console.log('Extracted bridge deposit address:', bridgeAddress);
-          return bridgeAddress;
-        }
-      }
-
-      console.error('Could not extract bridge deposit address from quote structure');
-      return null;
-    } catch (error) {
-      console.error('Error extracting bridge deposit address:', error);
-      return null;
     }
   };
 
@@ -802,7 +403,6 @@ export default function FundPage() {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         setCrossChainStatus(`Fetching BNB-to-SOL quote (attempt ${attempt}/${maxRetries})...`);
-        console.log(`Attempting BNB-to-SOL quote fetch, attempt ${attempt}/${maxRetries}`);
 
         const freshBnbToSolResponse = await fetch('/api/fund-crosschain', {
           method: 'POST',
@@ -831,11 +431,9 @@ export default function FundPage() {
 
       } catch (error: any) {
         console.error(`BNB-to-SOL quote attempt ${attempt} failed:`, error);
-
         if (attempt === maxRetries) {
           throw new Error(`Failed to get BNB-to-SOL quote after ${maxRetries} attempts: ${error.message}`);
         }
-
         const delayMs = Math.pow(2, attempt) * 1000;
         setCrossChainStatus(`Quote failed, retrying in ${delayMs/1000}s... (attempt ${attempt + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -843,45 +441,7 @@ export default function FundPage() {
     }
   };
 
-  const getSolToBnbQuoteWithRetry = async (amount: string, maxRetries: number = 3) => {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        setCrossChainStatus(`Getting SOL to BNB quote... (attempt ${attempt}/${maxRetries})`);
-        
-        const solToBnbResponse = await fetch('/api/fund-crosschain', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'getSOLToBNBQuote',
-            amount: (parseFloat(amount) * 1e9).toString(),
-            userAddress: '47Sph1rBUk6mopq42butRrjN9rGjWCVdSeeWUAMgteUh',
-            relayBNBAddress: RELAY_BNB_WALLET
-          })
-        });
-
-        if (!solToBnbResponse.ok) {
-          throw new Error('Failed to get SOL to BNB quote');
-        }
-
-        const solToBnbQuoteData = await solToBnbResponse.json();
-        console.log(`SOL-to-BNB quote successful on attempt ${attempt}`);
-        return solToBnbQuoteData;
-
-      } catch (error: any) {
-        console.error(`SOL-to-BNB quote attempt ${attempt} failed:`, error);
-
-        if (attempt === maxRetries) {
-          throw new Error(`Failed to get SOL-to-BNB quote after ${maxRetries} attempts: ${error.message}`);
-        }
-
-        const delayMs = Math.pow(2, attempt) * 1000;
-        setCrossChainStatus(`Quote failed, retrying in ${delayMs/1000}s... (attempt ${attempt + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
-    }
-  };
-
-  const refundToUser = async (amount: number) => {
+  const refundToUser = async (refundAmount: number) => {
     try {
       console.log('=== INITIATING REFUND TO USER ===');
       setCrossChainStatus('Refunding SOL to your wallet...');
@@ -891,10 +451,10 @@ export default function FundPage() {
       const refundInstruction = SystemProgram.transfer({
         fromPubkey: RELAY_WALLET_PUB,
         toPubkey: publicKey!,
-        lamports: Math.floor(amount * 1e9)
+        lamports: Math.floor(refundAmount * 1e9)
       });
 
-      const { context: { slot: minContextSlot }, value: blockhashCtx } = await connection.getLatestBlockhashAndContext();
+      const { value: blockhashCtx } = await connection.getLatestBlockhashAndContext();
 
       const response = await fetch('/api/fund', {
         method: 'POST',
@@ -949,14 +509,9 @@ export default function FundPage() {
           throw new Error('No BNB transaction data found in quote');
         }
 
-        console.log('=== EXECUTING BNB TRANSACTION ===');
-        console.log('BNB transaction data:', bnbTxData);
-
         const bnbResponse = await fetch('/api/fund-bnb', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             txData: bnbTxData.data || '0x',
             to: bnbTxData.to || bnbToSolQuote.details?.sender,
@@ -967,21 +522,17 @@ export default function FundPage() {
 
         if (!bnbResponse.ok) {
           const errorData = await bnbResponse.json();
-          console.error('BNB transaction failed:', errorData);
           throw new Error(`Failed to execute BNB transaction: ${errorData.error || 'Unknown error'}`);
         }
 
         const bnbResult = await bnbResponse.json();
         console.log('BNB transaction successful:', bnbResult);
-        console.log('BNB transaction hash:', bnbResult.txHash);
 
         setCrossChainStatus('Waiting for BNB to SOL bridge completion...');
 
         const bnbToSolCompletion = await fetch('/api/fund-crosschain', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: 'waitForCompletion',
             requestId: bnbToSolQuote.steps?.[0]?.requestId
@@ -997,20 +548,13 @@ export default function FundPage() {
 
       } catch (error: any) {
         console.error(`BNB transaction attempt ${attempt} failed:`, error);
-
         if (attempt === maxRetries) {
           throw error;
         }
-
         setCrossChainStatus(`BNB transaction failed, waiting for refund... (attempt ${attempt + 1}/${maxRetries})`);
-        
-        console.log('Waiting for automatic refund from Relay.link...');
         await new Promise(resolve => setTimeout(resolve, 10000));
-
-        console.log('Getting fresh BNB-to-SOL quote for retry...');
         const recalculatedBnbAmount = bnbToSolQuote.details?.currencyIn?.amount || '0';
         bnbToSolQuote = await fetchBnbToSolQuoteWithRetry(recalculatedBnbAmount);
-        
         const delayMs = Math.pow(2, attempt) * 1000;
         setCrossChainStatus(`Retrying in ${delayMs/1000}s... (attempt ${attempt + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -1026,13 +570,10 @@ export default function FundPage() {
         setCrossChainStatus(`Executing SOL to BNB bridge... (attempt ${attempt}/${maxRetries})`);
 
         const instructions = solToBnbQuote.steps?.[0]?.items?.[0]?.data?.instructions;
-        const addressLookupTableAddresses = solToBnbQuote.steps?.[0]?.items?.[0]?.data?.addressLookupTableAddresses || [];
 
         if (!instructions || !Array.isArray(instructions)) {
           throw new Error('No valid instructions found in SOL to BNB quote');
         }
-
-        console.log('Using relay.link instructions from quote:', instructions.length, 'instructions');
 
         const connection = await createRpc(RPC_URL);
 
@@ -1046,13 +587,13 @@ export default function FundPage() {
           data: Buffer.from(inst.data, 'hex')
         }));
 
-        const { context: { slot: minContextSlot }, value: blockhashCtx } = await connection.getLatestBlockhashAndContext();
+        const { value: blockhashCtx } = await connection.getLatestBlockhashAndContext();
 
         const response = await fetch('/api/fund', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            instructions: transactionInstructions.map(inst => ({
+            instructions: transactionInstructions.map((inst: any) => ({
               programId: inst.programId.toString(),
               keys: inst.keys.map((key: any) => ({
                 pubkey: key.pubkey.toString(),
@@ -1067,7 +608,7 @@ export default function FundPage() {
         });
 
         if (!response.ok) {
-          throw new Error('Failed to execute SOL to BNB bridge transaction via relay wallet');
+          throw new Error('Failed to execute SOL to BNB bridge transaction');
         }
 
         const { transaction: serializedTransaction } = await response.json();
@@ -1076,65 +617,49 @@ export default function FundPage() {
         const signature = await connection.sendTransaction(transaction);
         console.log('SOL to BNB bridge transaction signature:', signature);
 
-        const confirmTransactionWithRetry = async (connection: Connection, signature: string) => {
-          const maxRetries = 3;
-          for (let i = 0; i < maxRetries; i++) {
-            try {
-              const confirmation = await connection.confirmTransaction({
-                signature,
-                blockhash: blockhashCtx.blockhash,
-                lastValidBlockHeight: blockhashCtx.lastValidBlockHeight,
-              }, 'confirmed');
+        // Confirm with retry
+        for (let i = 0; i < 3; i++) {
+          try {
+            const confirmation = await connection.confirmTransaction({
+              signature,
+              blockhash: blockhashCtx.blockhash,
+              lastValidBlockHeight: blockhashCtx.lastValidBlockHeight,
+            }, 'confirmed');
 
-              const tx = await connection.getTransaction(signature, {
-                commitment: 'confirmed',
-                maxSupportedTransactionVersion: 0
-              });
+            const tx = await connection.getTransaction(signature, {
+              commitment: 'confirmed',
+              maxSupportedTransactionVersion: 0
+            });
 
-              if (!tx) {
-                throw new Error('Transaction not found');
-              }
-
-              console.log(`SOL to BNB bridge transaction confirmed: ${signature}`);
-              return signature;
-
-            } catch (error: any) {
-              console.log(`Bridge confirmation attempt ${i + 1} failed:`, error);
-              
-              if (error.message && (error.message.includes('expired') || error.message.includes('blockheight') || error.message.includes('TransactionExpiredBlockheightExceededError'))) {
-                throw new Error('TransactionExpiredBlockheightExceededError');
-              }
-              
-              if (i === maxRetries - 1) throw error;
-              await new Promise(resolve => setTimeout(resolve, 2000));
+            if (!tx) {
+              throw new Error('Transaction not found');
             }
-          }
-          throw new Error('Transaction confirmation failed');
-        };
 
-        const confirmedSignature = await confirmTransactionWithRetry(connection, signature);
-        console.log('SOL-to-BNB bridge transaction confirmed on-chain');
-        return confirmedSignature;
+            console.log(`SOL to BNB bridge transaction confirmed: ${signature}`);
+            return signature;
 
-      } catch (error: any) {
-        console.error(`SOL-to-BNB bridge attempt ${attempt} failed:`, error);
-
-        if (error.message && error.message.includes('TransactionExpiredBlockheightExceededError')) {
-          console.log('Transaction expired, will fetch fresh quote and retry...');
-          
-          if (attempt < maxRetries) {
-            setCrossChainStatus(`Transaction expired, getting fresh quote... (attempt ${attempt + 1}/${maxRetries})`);
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-            solToBnbQuote = await getSolToBnbQuoteWithRetry(amount, 3);
-            continue;
+          } catch (error: any) {
+            console.log(`Bridge confirmation attempt ${i + 1} failed:`, error);
+            if (i === 2) {
+              if (error.message?.includes('expired') || error.message?.includes('blockhash')) {
+                if (attempt < maxRetries) {
+                  setCrossChainStatus(`Transaction expired, getting fresh quote... (attempt ${attempt + 1}/${maxRetries})`);
+                  await new Promise(resolve => setTimeout(resolve, 3000));
+                  solToBnbQuote = await getSolToBnbQuoteWithRetry(amount, 3);
+                  continue;
+                }
+              }
+              throw error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 2000));
           }
         }
 
+      } catch (error: any) {
+        console.error(`SOL to BNB bridge attempt ${attempt} failed:`, error);
         if (attempt === maxRetries) {
           throw error;
         }
-
         const delayMs = Math.pow(2, attempt) * 1000;
         setCrossChainStatus(`Bridge failed, retrying in ${delayMs/1000}s... (attempt ${attempt + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -1144,66 +669,49 @@ export default function FundPage() {
     throw new Error('SOL to BNB bridge failed after all retries');
   };
 
+  // Cross-chain: shield to relay -> unshield to relay public -> SOL->BNB -> BNB->SOL -> destination
   const handleCrossChainTransfer = async () => {
     try {
       setTransactionStep(1);
-      setCrossChainStatus('Transferring to relay wallet...');
+      setCrossChainStatus('Shielding to relay wallet...');
 
-      let transferAmount: number;
-      if (shouldUsePrivateBalance()) {
-        transferAmount = await handlePrivateTransferToRelayType2();
-      } else {
-        transferAmount = await handlePublicBalanceShieldType2();
-      }
+      const transferAmount = await executeShieldToRelay();
 
       setTransactionStep(2);
       setCrossChainStatus('Unshielding to relay wallet public address...');
 
       await handleRelayWalletUnshield(transferAmount, RELAY_WALLET_PUB.toString());
 
-      setCrossChainStatus('Waiting 3 seconds before getting bridge quotes...');
+      setCrossChainStatus('Waiting before getting bridge quotes...');
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       setTransactionStep(3);
       
       try {
         const solToBnbQuote = await getSolToBnbQuoteWithRetry(amount, 3);
-        console.log('SOL to BNB quote response:', solToBnbQuote);
 
         const signature = await executeSolToBnbBridgeWithRetry(solToBnbQuote, 3);
 
-        console.log('SOL-to-BNB bridge transaction confirmed, waiting 5 seconds before proceeding...');
-
         setTransactionStep(5);
-        setCrossChainStatus('Waiting 5 seconds, then fetching BNB-to-SOL quote...');
+        setCrossChainStatus('Waiting for bridge, then fetching BNB-to-SOL quote...');
 
         await new Promise(resolve => setTimeout(resolve, 5000));
 
-        console.log('5-second buffer complete, now fetching fresh BNB-to-SOL quote with retry logic...');
-
         const recalculatedBnbAmount = Math.floor(parseFloat(solToBnbQuote.details.currencyOut.amount) * 0.995).toString();
-        console.log('Recalculated BNB amount for fresh quote:', recalculatedBnbAmount);
 
         const freshBnbToSolQuote = await fetchBnbToSolQuoteWithRetry(recalculatedBnbAmount);
-        console.log('=== FRESH BNB-TO-SOL QUOTE ===');
-        console.log('Full quote object:', JSON.stringify(freshBnbToSolQuote, null, 2));
 
         setTransactionStep(5);
         
-        const bnbResult = await executeBnbTransactionWithRetry(freshBnbToSolQuote, 3);
+        await executeBnbTransactionWithRetry(freshBnbToSolQuote, 3);
 
         setTransactionStep(6);
         setCrossChainStatus('Cross-chain transfer completed successfully!');
-        console.log('=== CROSS-CHAIN TRANSFER COMPLETE ===');
-        console.log('SOL transaction hash:', signature);
-        console.log('BNB transaction hash:', bnbResult.txHash);
 
       } catch (bridgeError: any) {
-        console.error('Bridge process failed completely:', bridgeError);
-        console.log('Initiating refund to user...');
-        
+        console.error('Bridge process failed:', bridgeError);
         await refundToUser(transferAmount);
-        throw new Error(`Bridge failed after all retries. Refund initiated: ${bridgeError.message}`);
+        throw new Error(`Bridge failed. Refund initiated: ${bridgeError.message}`);
       }
 
     } catch (err: any) {
@@ -1212,6 +720,7 @@ export default function FundPage() {
     }
   };
 
+  // Main transfer handler - one signature for fast-track, more for cross-chain
   const handleTransfer = async () => {
     try {
       setIsLoading(true);
@@ -1222,17 +731,17 @@ export default function FundPage() {
       if (selectedLevel === "balanced") {
         await handleCrossChainTransfer();
       } else {
-        if (shouldUsePrivateBalance()) {
-          await handlePrivateTransferToRelay();
-        } else {
-          await handlePublicBalanceShield();
-        }
-
-        const connection = await createRpc(RPC_URL);
-        await handleRelayWalletUnshield(parseFloat(amount));
-
-        setTransactionStep(4);
+        // Fast-track: user signs once (shield to relay) -> relay unshields to destination (no user sig)
+        const netAmount = await executeShieldToRelay();
+        await handleRelayWalletUnshield(netAmount);
       }
+
+      // Refresh balance after transfer
+      if (publicKey) {
+        const newBalance = await checkPublicBalance(publicKey.toString());
+        setPublicBalance(newBalance);
+      }
+
     } catch (err: any) {
       console.error('Transfer error:', err);
       setError(err.message || 'Transfer failed');
@@ -1240,6 +749,9 @@ export default function FundPage() {
       setCrossChainStatus('');
     } finally {
       setIsLoading(false);
+      setTimeout(() => {
+        setStatus('');
+      }, 5000);
     }
   };
 
@@ -1250,10 +762,7 @@ export default function FundPage() {
 
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-indigo-300">
-            Fund{" "}
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-indigo-300">
-              Privately
-            </span>
+            Fund Privately
           </h1>
           <p className="text-white/70 text-sm">
             Choose your privacy level and fund your trading wallets with complete anonymity
@@ -1361,73 +870,43 @@ export default function FundPage() {
                   {crossChainStatus}
                 </div>
               )}
+              {status && !crossChainStatus && (
+                <div className="mt-2 text-xs text-purple-400 text-center">
+                  {status}
+                </div>
+              )}
             </div>
 
-            {/* First Card: Transfer Details & Balance - 25% smaller */}
+            {/* Transfer Details Card */}
             <div className="bg-zinc-800/60 backdrop-blur-sm border border-zinc-600/40 rounded-lg p-2">
               <div className="flex items-start justify-between mb-1">
                 <div>
                   <h2 className="text-base font-semibold text-white">Transfer Details</h2>
                   <p className="text-white/60 text-xs">Configure your private transfer</p>
                 </div>
-                {/* Balance Display - Top Right Stacked */}
-                <div className="flex flex-col items-end gap-0.5">
-                  <div className="flex items-center gap-1">
-                    <span className="text-blue-500 text-xs font-medium">Public:</span>
-                    <span className="text-blue-500 text-xs font-medium">
-                      {publicBalance !== null ? `${publicBalance}` : '...'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-green-500 text-xs font-medium">Private:</span>
-                    <span className="text-green-500 text-xs font-medium">
-                      {privateBalance !== null ? `${privateBalance}` : '...'}
-                    </span>
-                  </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-blue-500 text-xs font-medium">Balance:</span>
+                  <span className="text-blue-500 text-xs font-medium">
+                    {publicBalance !== null ? `${publicBalance} SOL` : '...'}
+                  </span>
                 </div>
               </div>
 
               <div className="mt-2">
-                {/* Amount Input with Pub/Priv Buttons */}
-                <div>
-                  <label className="block text-white font-medium mb-1 text-sm">Amount (SOL)</label>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="number"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      className="flex-1 px-2.5 py-1.5 bg-zinc-800/60 border border-zinc-700/50 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50 text-sm"
-                      placeholder="Enter amount"
-                    />
-                    <button
-                      onClick={handlePubButtonClick}
-                      className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
-                        selectedWalletType === "pub"
-                          ? "bg-blue-500 text-white"
-                          : "bg-zinc-700/50 text-white/70 hover:bg-zinc-600/50"
-                      }`}
-                    >
-                      PUB
-                    </button>
-                    <button
-                      onClick={handlePrivButtonClick}
-                      className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
-                        selectedWalletType === "priv"
-                          ? "bg-green-500 text-white"
-                          : "bg-zinc-700/50 text-white/70 hover:bg-zinc-600/50"
-                      }`}
-                    >
-                      PRIV
-                    </button>
-                  </div>
-                </div>
+                <label className="block text-white font-medium mb-1 text-sm">Amount (SOL)</label>
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-zinc-800/60 border border-zinc-700/50 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50 text-sm"
+                  placeholder="Enter amount"
+                />
               </div>
             </div>
 
-            {/* Second Card: Destination & Summary - 25% smaller */}
+            {/* Destination & Summary Card */}
             <div className="bg-zinc-800/60 backdrop-blur-sm border border-zinc-600/40 rounded-lg p-2">
               <div className="space-y-2">
-                {/* Destination Address */}
                 <div>
                   <label className="block text-white font-medium mb-1 text-sm">Destination Wallet Address</label>
                   <input
@@ -1439,7 +918,6 @@ export default function FundPage() {
                   />
                 </div>
 
-
                 {selectedPrivacyLevel && (
                   <div className="bg-zinc-800/40 rounded-lg p-2 space-y-1.5">
                     <div className="flex justify-between text-xs">
@@ -1448,18 +926,10 @@ export default function FundPage() {
                     </div>
                     <div className="flex justify-between text-xs">
                       <span className="text-white/60">
-                        {selectedLevel === "balanced" 
-                          ? "Network Fee" 
-                          : selectedLevel === "fast" && shouldUsePrivateBalance()
-                            ? "Network Fee"
-                            : "Network Fee (1%)"
-                        }
+                        {selectedLevel === "balanced" ? "Network Fee" : "Network Fee (1%)"}
                       </span>
                       <span className="text-white">
-                        {(selectedLevel === "fast" && shouldUsePrivateBalance()) || selectedLevel === "balanced"
-                          ? "FREE" 
-                          : `${calculateNetworkFee()} SOL`
-                        }
+                        {selectedLevel === "balanced" ? "FREE" : `${calculateNetworkFee()} SOL`}
                       </span>
                     </div>
                     {selectedLevel === "balanced" && (
@@ -1480,7 +950,12 @@ export default function FundPage() {
                   </div>
                 )}
 
-                {/* Action Button */}
+                {error && (
+                  <div className="p-2 bg-red-900/20 border border-red-800/30 rounded-lg text-xs text-red-300">
+                    {error}
+                  </div>
+                )}
+
                 <button
                   onClick={handleTransfer}
                   disabled={isLoading || !destinationAddress.trim()}
