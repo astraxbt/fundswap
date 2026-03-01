@@ -296,7 +296,7 @@ export function LetheHero() {
       
       <div className="max-w-7xl mx-auto flex flex-col md:grid md:grid-cols-2 gap-6 md:gap-8 lg:gap-12 items-center">
         {/* Left side: headline + value props */}
-        <div className="space-y-4 md:space-y-6 lg:space-y-8 order-2 md:order-1">
+        <div className="space-y-4 md:space-y-6 lg:space-y-8 order-1 md:order-1">
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span className="w-2 h-2 bg-primary rounded-full animate-pulse" />
@@ -362,7 +362,7 @@ export function LetheHero() {
         </div>
 
         {/* Right side: Mini Fund widget */}
-        <div className="relative order-1 md:order-2 w-full max-w-sm mx-auto">
+        <div className="relative order-2 md:order-2 w-full max-w-sm mx-auto">
           <div className="bg-zinc-900/80 backdrop-blur-xl border border-zinc-700/50 rounded-2xl p-5 shadow-[0_8px_40px_rgba(0,0,0,0.4)]">
             {/* Widget header */}
             <div className="flex items-center justify-between mb-4">
