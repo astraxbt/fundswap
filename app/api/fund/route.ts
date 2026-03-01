@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
-import { PublicKey, Keypair, TransactionMessage, VersionedTransaction, TransactionInstruction } from '@solana/web3.js';
+import { PublicKey, Keypair, TransactionMessage, VersionedTransaction, TransactionInstruction, Connection, ComputeBudgetProgram } from '@solana/web3.js';
 import bs58 from 'bs58';
+
+const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || 'https://api.mainnet-beta.solana.com';
 
 export async function POST(request: Request) {
   try {
-    const { instructions: serializedInstructions, blockhash, userPublicKey } = await request.json();
+    const { instructions: serializedInstructions } = await request.json();
     
     const privateKeyString = process.env.Relay_Wallet_PRV;
     if (!privateKeyString) {
@@ -32,6 +34,16 @@ export async function POST(request: Request) {
       });
     });
 
+    // Add priority fee for better transaction landing
+    instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 })
+    );
+
+    const connection = new Connection(RPC_URL, 'confirmed');
+
+    // Get fresh blockhash server-side to minimize staleness
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+
     const messageV0 = new TransactionMessage({
       payerKey: feePayer.publicKey,
       recentBlockhash: blockhash,
@@ -39,12 +51,20 @@ export async function POST(request: Request) {
     }).compileToV0Message();
 
     const transaction = new VersionedTransaction(messageV0);
-    
     transaction.sign([feePayer]);
 
+    // Send transaction from server to minimize time between blockhash fetch and send
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+      maxRetries: 5,
+    });
+
+    console.log(`Fund API: unshield tx sent: ${signature}`);
+
     return NextResponse.json({
-      transaction: bs58.encode(transaction.serialize()),
-      relayWalletPublicKey: feePayer.publicKey.toString(),
+      signature,
+      blockhash,
+      lastValidBlockHeight,
     });
     
   } catch (error: any) {

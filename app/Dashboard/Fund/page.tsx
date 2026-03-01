@@ -287,42 +287,35 @@ export default function FundPage() {
         unshieldInstruction,
       ];
 
-      const { value: blockhashCtx } =
-        await connection.getLatestBlockhashAndContext();
+      const serializedInstructions = unshieldInstructions.map((inst: any) => ({
+        programId: inst.programId.toString(),
+        keys: inst.keys.map((key: any) => ({
+          pubkey: key.pubkey.toString(),
+          isSigner: key.isSigner,
+          isWritable: key.isWritable
+        })),
+        data: Array.from(inst.data)
+      }));
 
-      // Send to server - relay wallet signs (no user signature needed)
-      const response = await fetch('/api/fund', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          instructions: unshieldInstructions.map((inst: any) => ({
-            programId: inst.programId.toString(),
-            keys: inst.keys.map((key: any) => ({
-              pubkey: key.pubkey.toString(),
-              isSigner: key.isSigner,
-              isWritable: key.isWritable
-            })),
-            data: Array.from(inst.data)
-          })),
-          blockhash: blockhashCtx.blockhash,
-          userPublicKey: publicKey?.toString()
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to process relay wallet unshield transaction');
-      }
-
-      const { transaction: serializedTransaction } = await response.json();
-      const transaction = VersionedTransaction.deserialize(bs58.decode(serializedTransaction));
-
+      // Retry loop: server gets fresh blockhash, signs, and sends each attempt
       setStatus('Sending funds to destination...');
-      const signature = await connection.sendTransaction(transaction);
-
-      // Confirm with retry
-      for (let i = 0; i < 3; i++) {
+      const maxAttempts = 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
-          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+          const response = await fetch('/api/fund', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instructions: serializedInstructions })
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to process relay wallet unshield transaction');
+          }
+
+          const { signature, blockhash, lastValidBlockHeight } = await response.json();
+
+          // Confirm using the SAME blockhash the server used to build the tx
           const confirmation = await connection.confirmTransaction({
             signature,
             blockhash,
@@ -330,28 +323,21 @@ export default function FundPage() {
           }, 'confirmed');
 
           if (confirmation.value.err) {
-            throw new Error(`Transaction failed: ${confirmation.value.err}`);
-          }
-
-          const tx = await connection.getTransaction(signature, {
-            maxSupportedTransactionVersion: 0
-          });
-
-          if (!tx) {
-            throw new Error('Transaction not found');
+            throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
           }
 
           console.log(`Relay unshield confirmed: ${signature}`);
-          break;
-        } catch (error) {
-          console.log(`Confirmation attempt ${i + 1} failed:`, error);
-          if (i === 2) throw error;
+          setStatus('Transfer complete!');
+          setTransactionStep(4);
+          return; // Success
+
+        } catch (error: any) {
+          console.log(`Unshield attempt ${attempt + 1} failed:`, error);
+          if (attempt === maxAttempts - 1) throw error;
+          setStatus(`Retrying unshield (attempt ${attempt + 2}/${maxAttempts})...`);
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
-
-      setStatus('Transfer complete!');
-      setTransactionStep(4);
 
     } catch (err) {
       console.error('Relay unshield error:', err);
